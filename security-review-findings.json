@@ -1,23 +1,29 @@
 {
   "review_date": "2026-11-20",
-  "scope": [
-    "OpenSSH",
-    "mDNSResponder",
-    "cups",
-    "apache",
-    "apache_mod_hfs_apple",
-    "postfix",
-    "bootp",
-    "bind9",
-    "net_snmp",
-    "dcerpc",
-    "remote_cmds",
-    "webdavfs",
-    "eap8021x",
-    "ipsec",
+  "scope_this_pass": [
+    "configd",
+    "SMBClient",
+    "syslog",
+    "NFS",
+    "autofs",
+    "kext_tools",
+    "file_cmds",
+    "security_certificates",
     "security_ocspd"
   ],
-  "findings": [
+  "findings": [],
+  "notes": {
+    "security_ocspd": "CONFIRMED DISABLED. server/main.cpp:104-112 logs that ocspd is disabled (subsumed by trustd since macOS 12) and exit(1) before any run loop. LaunchDaemon plist still present; binary aborts on invoke. Network fetch / CRL paths unreachable.",
+    "configd": "Reviewed session.c checkWriteAccess/hasRootAccess/entitlements, SCDPlugin fork/execv with fixed paths, IPMonitor system() only in TEST_* builds. No unauthenticated SCDynamicStore write bypass validated.",
+    "SMBClient": "Reviewed parse_url, mount paths, kernel smb_crypt decompress (cap originalCompressedSegmentSize <= kDefaultMaxIOSize 8MiB; compress_len vs remaining_size). No complete remote kernel or local priv-esc chain validated.",
+    "syslog": "aslmanager XPC accept_connection only runs main_task when peer euid == geteuid. udp_in is unauthenticated log intake when socket configured — no command sink from message body.",
+    "NFS": "com.apple.nfsd.plist KeepAlive PathState /etc/exports — not active by default. mountd host matching via find_host/OP_DEFEXP; check_dirpath rejects symlink components. No stock unauthenticated export without admin enabling NFS.",
+    "autofs": "automountd MIG requires audit_token pid==0 (kernel). fstype concatenated into /sbin/mount_%s without '/' filter, but map sources are /etc and OD (admin); mount helpers run as sendereuid via posix_spawnattr_set_uid_np. No unprivileged complete chain.",
+    "kext_tools": "Non-root load limited to Extensions/System Filesystems with realpath revalidation; OSKextIsAuthentic/staging COPYFILE_NOFOLLOW. No unprivileged unsigned load chain.",
+    "file_cmds": "No setuid install modes; userland tools only. No privileged attack surface for local escalation alone.",
+    "security_certificates": "Static roots/pinning assets and CertificateTool build helpers; no runtime privileged daemon in this tree."
+  },
+  "prior_pass_findings_preserved": [
     {
       "severity": "HIGH",
       "location": "/workspace/apache_mod_hfs_apple/mod_hfs_apple2.c",
@@ -71,20 +77,5 @@
       "remediation": "Restrict redirects to the original host (or an explicit allowlist). Never change gBaseURL to a different host without user confirmation. Do not replay mount credentials to a host different from the one used at mount time; clear kCredentialsFromMount / force re-prompt on cross-host redirects.",
       "why_exploitable": "Mounting a remote WebDAV share is a normal user action. The server fully controls Location/X-Apple-MMe-Host. Cross-host redirect plus mount-credential-first authcache behavior yields both SSRF and credential theft without further bugs."
     }
-  ],
-  "checked_no_validated_medium_plus": {
-    "security_ocspd": "Daemon main() exits immediately (disabled); URL fetch/SSRF and system(openssl) paths are unreachable. Filenames for system() are SHA1-hex so not shell-injectable even if re-enabled.",
-    "OpenSSH": "Reviewed Apple LV clear (dlopen_lv), auth/session Apple hooks; no unauthenticated RCE/auth bypass chain.",
-    "cups": "v2.3.4; default Listen localhost; Local cert auth gated by httpAddrLocalhost; LPD user spoofing requires cups-lpd enabled (not default).",
-    "apache": "httpd-wrapper shell-string exec needs controlled ARGV/env.plist (root); ManagedConfiguration path selection not a vuln by itself.",
-    "postfix": "Apple server_config_directory patch only; no network RCE found.",
-    "bootp": "DHCP/BSDP option parsing uses bounded helpers; no command injection sink from network input.",
-    "bind9": "Stock named sources; no Apple-specific exploitable network bug validated.",
-    "net_snmp": "Default snmpd.conf has limited rocommunity public to one OID; not a complete HIGH exploit chain.",
-    "dcerpc": "REMOTE_ENDPOINT_ACCESS undefined; ept_insert/delete gated by is_unpriv_handle.",
-    "remote_cmds": "tftpd path checks present; talkd/telnetd legacy but no new complete RCE chain validated.",
-    "eap8021x": "EAP packet validation present; test password string is test-only.",
-    "ipsec": "XAUTH password plog is #if 0; ISAKMP length checks present in reviewed paths.",
-    "mDNSResponder": "Core/ServiceRegistration reviewed for obvious unchecked copies; no complete remote exploit chain validated."
-  }
+  ]
 }
