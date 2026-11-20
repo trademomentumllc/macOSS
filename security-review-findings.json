@@ -1,0 +1,90 @@
+{
+  "review_date": "2026-11-20",
+  "scope": [
+    "OpenSSH",
+    "mDNSResponder",
+    "cups",
+    "apache",
+    "apache_mod_hfs_apple",
+    "postfix",
+    "bootp",
+    "bind9",
+    "net_snmp",
+    "dcerpc",
+    "remote_cmds",
+    "webdavfs",
+    "eap8021x",
+    "ipsec",
+    "security_ocspd"
+  ],
+  "findings": [
+    {
+      "severity": "HIGH",
+      "location": "/workspace/apache_mod_hfs_apple/mod_hfs_apple2.c",
+      "title": "Use-after-free in mod_hfs_apple non-ASCII path comparison",
+      "description": "compare_non_ascii_paths() CFRelease()s parentRef and childRef, then immediately passes those freed CFStringRefs into CFStringCreateWithSubstring(). Directory entries and request paths are always normalized with a trailing slash, so both UAF branches execute for every non-ASCII URI that reaches the fixup hook. mod_hfs_apple is LoadModule'd in Apple's httpd.conf patch and listed among httpd-wrapper default active modules.",
+      "impact": "Unauthenticated remote HTTP requests can corrupt heap memory in the Apache worker (typically _www). Reliable process crash (DoS); with heap grooming, potential remote code execution in the httpd process.",
+      "attack_path": "1) Enable/run Apple httpd with mod_hfs_apple (default when Web Sharing/Server httpd is on). 2) Ensure at least one <Directory> applies (default DocumentRoot). 3) Send HTTP request whose mapped filename contains a non-ASCII UTF-8 byte (e.g. /café/ or percent-encoded multi-byte UTF-8). 4) fixups -> compare_paths -> compare_non_ascii_paths: CFRelease then CFStringCreateWithSubstring on freed refs. 5) Crash or exploit UAF for code execution as the httpd user.",
+      "evidence": [
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:193",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:194",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:195",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:198",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:199",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:200",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:116",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:117",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:118",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:261",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:262",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:340",
+        "apache_mod_hfs_apple/mod_hfs_apple2.c:344",
+        "apache/patches/patch-docs__conf__httpd.conf.in:26"
+      ],
+      "remediation": "Strip the trailing slash before release: create the substring from the live CFStringRef first, then CFRelease the original. Example: tmp = CFStringCreateWithSubstring(NULL, parentRef, range); CFRelease(parentRef); parentRef = tmp; Same for childRef. Add regression tests with non-ASCII URIs and AddressSanitizer.",
+      "why_exploitable": "Network-reachable without authentication whenever httpd+mod_hfs_apple serves content. Trigger condition (non-ASCII path + trailing slash) is guaranteed by the module's own path normalization. CFRelease-then-use is classic undefined behavior that modern allocators make exploitable."
+    },
+    {
+      "severity": "MEDIUM",
+      "location": "/workspace/webdavfs/mount.tproj/webdav_cache.c",
+      "title": "WebDAV redirect accepts attacker Location/X-Apple-MMe-Host enabling SSRF and mount-credential replay",
+      "description": "nodecache_redirect_node() builds the new base URL from the server's Location header (or X-Apple-MMe-Host for status 330) with no host allowlist. The only check blocks https→http downgrade. After root redirect, gBaseURL is replaced. On subsequent 401s, AddServerCredentials() prefers CopyMountCredentials() and can send the original mount username/password to the redirected host.",
+      "impact": "A malicious WebDAV server can pivot the mounted filesystem agent to arbitrary http(s) URLs (SSRF from the client host as the mounting user) and obtain the mount credentials when the redirect target challenges for auth.",
+      "attack_path": "1) Victim mounts https://evil.example/share with username/password. 2) evil.example responds 302/330 with Location or X-Apple-MMe-Host pointing at https://attacker-collector/ or an internal https service. 3) nodecache_redirect_node updates gBaseURL/redir_name. 4) Later requests go to the attacker-chosen host; on 401, authcache CreateAuthenticationFromResponse → AddServerCredentials → CopyMountCredentials sends mount credentials to that host.",
+      "evidence": [
+        "webdavfs/mount.tproj/webdav_cache.c:1267",
+        "webdavfs/mount.tproj/webdav_cache.c:1270",
+        "webdavfs/mount.tproj/webdav_cache.c:1284",
+        "webdavfs/mount.tproj/webdav_cache.c:1296",
+        "webdavfs/mount.tproj/webdav_cache.c:1304",
+        "webdavfs/mount.tproj/webdav_cache.c:1347",
+        "webdavfs/mount.tproj/webdav_cache.c:1348",
+        "webdavfs/mount.tproj/webdav_cache.c:1349",
+        "webdavfs/mount.tproj/webdav_cache.c:1376",
+        "webdavfs/mount.tproj/webdav_cache.c:1391",
+        "webdavfs/mount.tproj/webdav_cache.c:1392",
+        "webdavfs/mount.tproj/webdav_authcache.c:337",
+        "webdavfs/mount.tproj/webdav_authcache.c:340",
+        "webdavfs/mount.tproj/webdav_authcache.c:345",
+        "webdavfs/mount.tproj/webdav_authcache.c:542"
+      ],
+      "remediation": "Restrict redirects to the original host (or an explicit allowlist). Never change gBaseURL to a different host without user confirmation. Do not replay mount credentials to a host different from the one used at mount time; clear kCredentialsFromMount / force re-prompt on cross-host redirects.",
+      "why_exploitable": "Mounting a remote WebDAV share is a normal user action. The server fully controls Location/X-Apple-MMe-Host. Cross-host redirect plus mount-credential-first authcache behavior yields both SSRF and credential theft without further bugs."
+    }
+  ],
+  "checked_no_validated_medium_plus": {
+    "security_ocspd": "Daemon main() exits immediately (disabled); URL fetch/SSRF and system(openssl) paths are unreachable. Filenames for system() are SHA1-hex so not shell-injectable even if re-enabled.",
+    "OpenSSH": "Reviewed Apple LV clear (dlopen_lv), auth/session Apple hooks; no unauthenticated RCE/auth bypass chain.",
+    "cups": "v2.3.4; default Listen localhost; Local cert auth gated by httpAddrLocalhost; LPD user spoofing requires cups-lpd enabled (not default).",
+    "apache": "httpd-wrapper shell-string exec needs controlled ARGV/env.plist (root); ManagedConfiguration path selection not a vuln by itself.",
+    "postfix": "Apple server_config_directory patch only; no network RCE found.",
+    "bootp": "DHCP/BSDP option parsing uses bounded helpers; no command injection sink from network input.",
+    "bind9": "Stock named sources; no Apple-specific exploitable network bug validated.",
+    "net_snmp": "Default snmpd.conf has limited rocommunity public to one OID; not a complete HIGH exploit chain.",
+    "dcerpc": "REMOTE_ENDPOINT_ACCESS undefined; ept_insert/delete gated by is_unpriv_handle.",
+    "remote_cmds": "tftpd path checks present; talkd/telnetd legacy but no new complete RCE chain validated.",
+    "eap8021x": "EAP packet validation present; test password string is test-only.",
+    "ipsec": "XAUTH password plog is #if 0; ISAKMP length checks present in reviewed paths.",
+    "mDNSResponder": "Core/ServiceRegistration reviewed for obvious unchecked copies; no complete remote exploit chain validated."
+  }
+}
